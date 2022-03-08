@@ -14,7 +14,7 @@ import os
 import re
 import time
 import shutil
-from multiprocessing import Process, current_process, cpu_count
+from multiprocessing import Process, current_process, cpu_count, freeze_support
 from requests.adapters import HTTPAdapter
 from gevent.pool import Pool
 import pymysql
@@ -59,7 +59,7 @@ class WallpaperDownloader(object):
         with open(f"电脑壁纸/{folder}/{folder}{num}.jpg", "wb") as f:
             f.write(req_content)
 
-        print(f"壁纸{folder}{num}下载成功")
+        print(f"8----壁纸{folder}{num}下载成功！！")
 
     def gevent_start(self, gevent_list):
         """
@@ -67,7 +67,7 @@ class WallpaperDownloader(object):
         :param gevent_list: 该进程中的协程数量及协程要下载的URL
         :return:
         """
-        print(f"----{current_process().name}，进程编号：{current_process().pid}----开启")
+        print(f"7----{current_process().name}，进程编号：{current_process().pid}开启成功！！")
         # 定义协程池，数量保持与flag相同
         pool = Pool(6000)
         for url_line in gevent_list:
@@ -107,11 +107,13 @@ class WallpaperDownloader(object):
         主控制方法，由外部的main.py文件调用
         :return:
         """
+        freeze_support()
+
         wallpaper_downloader_time_start = time.time()
 
         # 调用数据表找到壁纸地址的所有行信息，包括id、title、url
         with self.conn.cursor() as cursor:
-            cursor.execute("""SELECT * FROM wallpaper.wallpaper_address where title like '%性感%美女%';""")
+            cursor.execute("""SELECT * FROM wallpaper.wallpaper_address;""")
             url_data_tuple = cursor.fetchall()
             self.conn.close()
 
@@ -126,7 +128,7 @@ class WallpaperDownloader(object):
                 pass
             else:
                 os.mkdir(f"电脑壁纸/{folder}")
-                print(f"生成目录：电脑壁纸/{folder}--成功")
+                print(f"6----生成目录：电脑壁纸/{folder}生成成功！！")
 
         # 调用进程生成方法,方法调用结束后返回所有子进程的指向列表
         subprocess_list = self.multiprocessing_start(url_data_tuple)
@@ -137,7 +139,3 @@ class WallpaperDownloader(object):
 
         wallpaper_downloader_time_end = time.time()
         print(f"总耗时为：{wallpaper_downloader_time_end - wallpaper_downloader_time_start}秒")
-
-
-if __name__ == "__main__":
-    pass
