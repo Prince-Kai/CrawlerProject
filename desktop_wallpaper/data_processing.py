@@ -5,27 +5,30 @@
 # @Author  : Kai Prince
 # @File    : data_processing.py
 # +-------------------------------------------------------------------
+import logging
+import re
+
+import pymysql
 from gevent import monkey
+from gevent.pool import Pool
 
 # 猴子补丁
 monkey.patch_all()
 
-from gevent.pool import Pool
 import time
-import re
-import pymysql
 import requests
+from requests.adapters import HTTPAdapter
 
 
 class BasicInformationDownload(object):
     """
     基础信息下载类
-    会生成四个数据表：categories（分类）、subtype（子类）、size（尺寸）、wallpaper_package（壁纸包）
+    会生成五个数据表：categories（分类）、subtype（子类）、size（尺寸）、wallpaper_package（壁纸包）、wallpaper_address（壁纸地址）
     并通过requests库模拟访问目标地址，获取到相关信息写入数据表
     """
 
     def __init__(self):
-        print("0----开始初始化数据表！！")
+        logging.debug("【主进程】开始初始化数据表；\n")
         # 定义壁纸地址、伪造请求头、设定请求地址的等待时间
         self.url_origin = "https://desk.zol.com.cn"
         self.url_pc = "https://desk.zol.com.cn/pc/"
@@ -39,6 +42,8 @@ class BasicInformationDownload(object):
         # 创建类初始化时数据库连接，并生成游标
         self.conn = pymysql.connect(host="localhost", port=3306, user="admin", password="admin", db="wallpaper")
         self.cursor = self.conn.cursor()
+        # 定义一个壁纸包名称收集列表，用于插入数据库前的去重校验使用
+        self.wallpaper_package_title_list = list()
 
     def create_table(self):
         """
@@ -50,8 +55,9 @@ class BasicInformationDownload(object):
         data = self.cursor.fetchall()
         if data:
             for table in data:
-                self.cursor.execute(f"""drop table {table[0]};""")
-                print(f"##0----数据表{table[0]}已存在，已完成删除！！")
+                sql = f"""drop table {table[0]};"""
+                self.cursor.execute(sql)
+                logging.debug(f"【主进程】【数据库】删除数据表{table[0]}; 执行的sql语句：{sql}；\n")
         # 初始化过程生成的四个数据表
         sql_list = [
             """
@@ -97,7 +103,7 @@ class BasicInformationDownload(object):
         self.cursor.execute("""show tables;""")
         tables = self.cursor.fetchall()
         for table in tables:
-            print(f"##0----数据表{table[0]}创建成功！！")
+            logging.debug(f"【主进程】【数据库】生成数据表{table[0]}；\n")
 
     def mysql_conn_del(self):
         """
@@ -106,34 +112,44 @@ class BasicInformationDownload(object):
         """
         self.cursor.close()
         self.conn.close()
-
-        print("5----基础信息已准备就绪！！")
+        logging.debug("【主进程】【数据库】数据库连接已关闭；\n")
 
     def get_categories_size(self):
         """
         模拟网页访问，获取到壁纸分类和尺寸信息
         :return: 分类名称、分类URL、尺寸名称、尺寸URL
         """
-        print("1----开始下载壁纸分类、壁纸尺寸信息！！")
+        logging.debug(f"【主进程】【下载】壁纸分类、壁纸尺寸信息；\n")
 
-        # 请求ZOL电脑壁纸地址，获取到返回HTML信息
-        response_categories = requests.get(url=self.url_pc, headers=self.headers, timeout=15).content.decode("gbk")
-        response_replace = response_categories.replace(" ", "").replace("\r", "").replace("\n", "")
+        try:
+            # 请求ZOL电脑壁纸地址，获取到返回HTML信息
+            response_categories = requests.get(url=self.url_pc, headers=self.headers, timeout=15).content.decode("gbk")
+            response_replace = response_categories.replace(" ", "").replace("\r", "").replace("\n", "")
 
-        # 通过正则表达式获取到壁纸分类、分类地址、壁纸尺寸、尺寸地址
-        self.wallpaper_categories = ["全部"] + re.findall(r"""<ahref="/[a-z]+/">([\w]+)</a>""", response_replace)
-        wallpaper_categories_url = ["/pc/"] + re.findall(r"""<ahref="(/[a-z]+/)">[\w]+</a>""", response_replace)
-        wallpaper_size = re.findall(r"""<ahref="/[0-9]+x[0-9]+/">([a-z0-9x]+\(*\w*.\w*\)*)</a>""", response_replace)
-        wallpaper_size_url = re.findall(r"""<ahref="(/[0-9]+x[0-9]+/)">[a-z0-9x]+\(*\w*.\w*\)*</a>""", response_replace)
+            # 通过正则表达式获取到壁纸分类、分类地址、壁纸尺寸、尺寸地址
+            wallpaper_categories = ["全部"] + re.findall(r"""<ahref="/[a-z]+/">([\w]+)</a>""", response_replace)
+            wallpaper_categories_url = ["/pc/"] + re.findall(r"""<ahref="(/[a-z]+/)">[\w]+</a>""", response_replace)
+            wallpaper_size = re.findall(r"""<ahref="/[0-9]+x[0-9]+/">([a-z0-9x]+\(*\w*.\w*\)*)</a>""", response_replace)
+            wallpaper_size_url = re.findall(r"""<ahref="(/[0-9]+x[0-9]+/)">[a-z0-9x]+\(*\w*.\w*\)*</a>""",
+                                            response_replace)
 
-        # 拼接分类的完整URL，用于获取分类下的子类信息
-        self.url_categories_dict = {self.wallpaper_categories[i]: self.url_origin + wallpaper_categories_url[i] for i in
-                                    range(len(self.wallpaper_categories))}
-        # 将查询的结果插入到数据表中
-        self.insert_categories_size(self.wallpaper_categories, wallpaper_categories_url, wallpaper_size,
-                                    wallpaper_size_url)
+            # 拼接分类的完整URL，用于获取分类下的子类信息
+            url_categories_dict = {wallpaper_categories[i]: self.url_origin + wallpaper_categories_url[i] for i in
+                                   range(len(wallpaper_categories))}
 
-        print("##1----壁纸分类、壁纸尺寸信息下载成功！！")
+            logging.debug(
+                f"【主进程】【网络请求】壁纸分类：{wallpaper_categories}；\n壁纸分类地址：{wallpaper_categories_url}；\n壁纸尺寸：{wallpaper_size}；\n壁纸尺寸地址{wallpaper_size_url}；\n")
+
+            # 将查询的结果插入到数据表中，并启动子类信息查询
+            self.insert_categories_size(wallpaper_categories, wallpaper_categories_url, wallpaper_size,
+                                        wallpaper_size_url)
+
+            logging.debug(f"【主进程】【下载成功】壁纸分类、壁纸尺寸信息；\n")
+
+            self.get_subtype(wallpaper_categories, url_categories_dict)
+
+        except Exception as result:
+            logging.debug(f"【主进程】【ERROR】{result}；\n")
 
     def insert_categories_size(self, wallpaper_categories, wallpaper_categories_url, wallpaper_size,
                                wallpaper_size_url):
@@ -149,6 +165,7 @@ class BasicInformationDownload(object):
         for i in range(len(wallpaper_categories)):
             sql_categories = """insert into wallpaper.categories values(0,'%s','%s'); """ % (
                 wallpaper_categories[i], wallpaper_categories_url[i])
+            logging.debug(f"【主进程】【数据库】壁纸分类插入SQL语句：{sql_categories}；\n")
             self.cursor.execute(sql_categories)
 
         # 遍历壁纸尺寸列表，生成SQL语句并插入到尺寸表
@@ -156,34 +173,44 @@ class BasicInformationDownload(object):
             sql_size = """insert into wallpaper.size values(0,'%s','%s'); """ % (
                 wallpaper_size[j], wallpaper_size_url[j])
             self.cursor.execute(sql_size)
+            logging.debug(f"【主进程】【数据库】壁纸尺寸插入SQL语句：{sql_size}；\n")
 
         self.conn.commit()
+        logging.debug(f"【主进程】【数据库】壁纸分类、尺寸信息提交成功；\n")
 
-    def get_subtype(self):
+    def get_subtype(self, wallpaper_categories, url_categories_dict):
         """
         模拟网页访问，获取到子类信息
+        :param wallpaper_categories: 壁纸分类
+        :param url_categories_dict: 壁纸分类地址，字典格式
         :return: 返回子类名称、子类URL
         """
-        print("2----开始下载壁纸子类信息！！")
+        logging.debug(f"【主进程】【下载】壁纸子类信息；\n")
 
         subtype_title = list()
         subtype_url = list()
 
-        for key, value in self.url_categories_dict.items():
-            response_subclass = requests.get(url=value, headers=self.headers, timeout=15).content.decode("gbk")
-            response_subclass_replace = response_subclass.replace(" ", "").replace("\r", "").replace("\n", "")
+        # 遍历壁纸分类地址字典
+        for key, value in url_categories_dict.items():
+            try:
+                response_subclass = requests.get(url=value, headers=self.headers, timeout=15).content.decode("gbk")
+                response_subclass_replace = response_subclass.replace(" ", "").replace("\r", "").replace("\n", "")
 
-            wallpaper_subtype = re.findall(r"""<ahref="/[a-z]+/[a-z]+/">([\w]+)</a>""", response_subclass_replace)
-            wallpaper_subtype_url = re.findall(r"""<ahref="/[a-z]+(/[a-z]+/)">[\w]+</a>""", response_subclass_replace)
+                wallpaper_subtype = re.findall(r"""<ahref="/[a-z]+/[a-z]+/">([\w]+)</a>""", response_subclass_replace)
+                wallpaper_subtype_url = re.findall(r"""<ahref="/[a-z]+(/[a-z]+/)">[\w]+</a>""",
+                                                   response_subclass_replace)
 
-            subtype_title.append(wallpaper_subtype)
+                logging.debug(f"【主进程】【网络请求】壁纸子类：{wallpaper_subtype}；\n壁纸子类地址：{wallpaper_subtype_url}；\n")
 
-            subtype_url.append(wallpaper_subtype_url)
+                subtype_title.append(wallpaper_subtype)
+                subtype_url.append(wallpaper_subtype_url)
 
-        # 将插叙到的数据插入到数据表中
-        self.insert_subtype(self.wallpaper_categories, (subtype_title, subtype_url))
+                # 将查询到的数据插入到数据表中
+                self.insert_subtype(wallpaper_categories, (subtype_title, subtype_url))
+                logging.debug(f"【主进程】【下载成功】壁纸子类信息；\n")
 
-        print("##2----壁纸子类信息下载成功！！")
+            except Exception as result:
+                logging.debug(f"【主进程】【ERROR】{result}；\n")
 
     def insert_subtype(self, wallpaper_categories, subtype_info):
         """
@@ -199,7 +226,9 @@ class BasicInformationDownload(object):
             for j, h in zip(subtype_title[i], subtype_url[i]):
                 sql_subtype = """insert into wallpaper.subtype values(0,'%s','%s','%s')""" % (j, h, i + 1)
                 self.cursor.execute(sql_subtype)
-        self.conn.commit()
+                logging.debug(f"【主进程】【数据库】壁纸子类插入SQL语句：{sql_subtype}；\n")
+            self.conn.commit()
+            logging.debug(f"【主进程】【数据库】壁纸子类信息提交成功；\n")
 
     def get_wallpaper_package_address_gevent_start(self):
         """
@@ -211,79 +240,115 @@ class BasicInformationDownload(object):
         # 将所有页面地址加入到到协程池
         for i in range(1, self.page):
             if i == 1:
-                self.get_wallpaper_package_address(self.url_default)
+                self.get_wallpaper_package_address((self.url_default, 0))
             else:
-                pool.map(self.get_wallpaper_package_address, (self.url_default + str(i) + ".html",))
+                pool.map(self.get_wallpaper_package_address, ((self.url_default + str(i) + ".html", i),))
+                logging.debug(f"【主进程】【壁纸包协程{i}】创建成功；\n")
         pool.join()
 
-    def get_wallpaper_package_address(self, url_input):
+    def get_wallpaper_package_address(self, url_input_i):
         """
         循环调用方法先取出所有页面地址，并根据页面地址取出所有的壁纸包（所有页）
-        :param url_input:需要爬取的目标地址
+        :param url_input_i:url_input+i的元组，url_input:需要爬取的目标地址；i:协程序号。
         :return:
         """
+        url_input = url_input_i[0]
+        num = url_input_i[1]
+
+        logging.debug(f"【主进程】【壁纸包协程{num}】壁纸包地址下载协程开启成功；\n")
+
         wallpaper_package_url_set = set()
+        try:
+            response_package = requests.get(url=url_input, headers=self.headers, timeout=15).content.decode("gbk")
+            response_package_replace = response_package.replace(" ", "").replace("\r", "").replace("\n", "")
 
-        response_package = requests.get(url=url_input, headers=self.headers, timeout=15).content.decode("gbk")
-        response_package_replace = response_package.replace(" ", "").replace("\r", "").replace("\n", "")
+            wallpaper_package_url = re.findall(r"""padding"><aclass="pic"href="(/bizhi/[0-9a-z_.]+)""",
+                                               response_package_replace)
+            wallpaper_package_url_set.update(wallpaper_package_url)
 
-        wallpaper_package_url = re.findall(r"""padding"><aclass="pic"href="(/bizhi/[0-9a-z_.]+)""",
-                                           response_package_replace)
+            logging.debug(f"【主进程】【壁纸包协程{num}】【网络请求】壁纸包地址：{wallpaper_package_url}；\n")
 
-        wallpaper_package_url_set.update(wallpaper_package_url)
+            # 将每个协程中的壁纸包地址加入到列表中，用于插入数据表前去重
+            self.wallpaper_package_title_list += wallpaper_package_url
 
-        self.insert_wallpaper_package_address(wallpaper_package_url_set)
+            self.insert_wallpaper_package_address(wallpaper_package_url_set, num)
 
-    def insert_wallpaper_package_address(self, wallpaper_package_url_set):
+        except Exception as result:
+            logging.debug(f"【主进程】【壁纸包协程{num}】【ERROR】捕获到异常：{result}；\n")
+
+    def insert_wallpaper_package_address(self, wallpaper_package_url_set, num):
         """
         由get_wallpaper_package_address方法调用，往数据表中插入网页返回的壁纸包信息
+        :param num: 协程编号
         :param wallpaper_package_url_set:壁纸包地址集合，已去重
         :return:
         """
-        # 遍历壁纸包地址集合，取出所有壁纸包地址，转存如数据表
+        # 遍历壁纸包地址集合，取出所有壁纸包地址，转存入数据表
         for i in wallpaper_package_url_set:
-            sql_wallpaper_package = """insert into wallpaper.wallpaper_package values(0,'%s')""" % i
-            self.cursor.execute(sql_wallpaper_package)
-            print(f"##3----壁纸包{i}地址下载成功！！")
+            if self.wallpaper_package_title_list.count(i) == 1:
+                sql_wallpaper_package = """insert into wallpaper.wallpaper_package values(0,'%s')""" % i
+                self.cursor.execute(sql_wallpaper_package)
+                logging.debug(f"【主进程】【壁纸包协程{num}】【数据库】壁纸包信息插入SQL：{sql_wallpaper_package}；\n")
+
         self.conn.commit()
+        logging.debug(f"【主进程】【壁纸包协程{num}】【数据库】壁纸包信息提交成功；\n")
 
     def get_wallpaper_address_gevent_start(self):
-
+        """
+        壁纸地址获取方法的协程生成方法
+        :return:
+        """
         # 定义壁纸下载协程池
         pool = Pool(6000)
 
-        # 1.查询数据表wallpaper_package，获取到所有的壁纸包地址，url_package_tuple为元组格式：(("11",),("22",))
+        # 查询数据表wallpaper_package，获取到所有的壁纸包地址，url_package_tuple为元组格式：(("11",),("22",))
         sql_wallpaper_address = """SELECT url from wallpaper.wallpaper_package;"""
         self.cursor.execute(sql_wallpaper_address)
         url_package_tuple = self.cursor.fetchall()
+        logging.debug(f"【主进程】【数据库】壁纸包信息取出SQL：{sql_wallpaper_address}；\n")
 
         # 遍历所有壁纸包下载地址，加入到协程池中
-        for url_package in url_package_tuple:
-            pool.map(self.get_wallpaper_address, url_package)
+        for idx, url_package in enumerate(url_package_tuple):
+            logging.debug(f"【主进程】【壁纸地址协程{idx}】壁纸地址协程开启；\n")
+            pool.map(self.get_wallpaper_address, ((url_package, idx),))
         pool.join()
 
-    def get_wallpaper_address(self, url_package):
+    def get_wallpaper_address(self, url_package_idx):
         """
         读取数据表wallpaper_package，获取到全部的壁纸包地址，并进行下述请求，获取到真实的图片下载地址
+        :param url_package_idx: url_package+idx的元组，url_package:壁纸包地址；idx: 协程编号。
         :return:
         """
+
+        url_package = url_package_idx[0][0]
+        idx = url_package_idx[1]
+
+        logging.debug(f"【主进程】【壁纸地址协程{idx}】开始下载；\n")
+
         # 定义一个空的地址字典包，用于存储每个壁纸包中的壁纸下载地址，循环取出每个壁纸包后清空
         wallpaper_all = dict()
+        try:
+            ret = requests.get(url=self.url_origin + url_package, headers=self.headers, timeout=15).content.decode(
+                "gbk")
+            ret_replace = ret.replace(" ", "").replace("\r", "").replace("\n", "")
 
-        ret = requests.get(url=self.url_origin + url_package, headers=self.headers, timeout=15).content.decode("gbk")
-        ret_replace = ret.replace(" ", "").replace("\r", "").replace("\n", "")
+            wallpaper_title = re.findall(r"""<aid="titleName"href="/bizhi/[0-9_]+.html">([\w\W]+?)</a>""", ret_replace)
+            wallpaper_address = re.findall(r"""<imgsrc[s]*="([/\w.:-]+)"width="\d+"height="\d+">""", ret_replace)
 
-        wallpaper_title = re.findall(r"""<aid="titleName"href="/bizhi/[0-9_]+.html">([\w\W]+?)</a>""", ret_replace)
-        wallpaper_address = re.findall(r"""<imgsrc[s]*="([/\w.:-]+)"width="\d+"height="\d+">""", ret_replace)
+            logging.debug(f"【主进程】【壁纸地址协程{idx}】【网络请求】壁纸名称：{wallpaper_title}；\n壁纸地址：{wallpaper_address}；\n")
 
-        # 将壁纸下载地址以字典的形式存入，格式：key:壁纸名，value:[壁纸下载地址1,壁纸下载地址2,......]
-        wallpaper_all[wallpaper_title[0]] = wallpaper_address
+            # 将壁纸下载地址以字典的形式存入，格式：key:壁纸名，value:[壁纸下载地址1,壁纸下载地址2,......]
+            wallpaper_all[wallpaper_title[0]] = wallpaper_address
 
-        self.insert_wallpaper_address(wallpaper_all)
+            self.insert_wallpaper_address(wallpaper_all, idx)
 
-    def insert_wallpaper_address(self, wallpaper_all):
+        except Exception as result:
+            logging.debug(f"【主进程】【壁纸地址协程{idx}】【ERROR】捕获到异常：{result}；\n")
+
+    def insert_wallpaper_address(self, wallpaper_all, idx):
         """
         由get_wallpaper_address方法调用，接收壁纸下载地址字典后，转存入数据表
+        :param idx: 协程序号
         :param wallpaper_all:每个壁纸包中的所有壁纸下载地址，格式为字典,key为壁纸包名 value为壁纸地址列表
         :return:
         """
@@ -294,17 +359,21 @@ class BasicInformationDownload(object):
                 sql_wallpaper_address = """insert into wallpaper.wallpaper_address values(0,'%s','%s')""" % (
                     key, url_re)
                 self.cursor.execute(sql_wallpaper_address)
-                print(f"##4----壁纸地址{url_re}下载成功！！")
+                logging.debug(f"【主进程】【壁纸地址协程{idx}】【数据库】壁纸地址{url_re}插入成功，SQL语句：{sql_wallpaper_address}；\n")
 
             self.conn.commit()
+            logging.debug(f"【主进程】【壁纸地址协程{idx}】【数据库】壁纸包“{key}”下壁纸地址提交成功；\n")
+            logging.debug(f"【主进程】【壁纸地址协程{idx}】关闭；\n")
 
     def main(self):
         """
         控制方法，协调调度进行下载、保存
-        :return:
         """
+        # 设置请求重试次数
+        requests.adapters.DEFAULT_RETRIES = 5
+
         # 记录开始时间
-        basic_information_time_start = time.time()
+        time_start = time.time()
 
         # 初始化创建数据表，初始化后不再调用
         self.create_table()
@@ -312,21 +381,19 @@ class BasicInformationDownload(object):
         # 调用get_categories_size方法获取分类及尺寸信息，并使用insert_first方法存入数据表categories、size中
         self.get_categories_size()
 
-        # 调用get_subtype方法获取子类信息，并使用insert_second方法存入数据表subtype中
-        self.get_subtype()
-
         # 调用get_wallpaper_package_address的协程生成方法，使用协程池获取所有壁纸包地址
-        print("3----开始下载壁纸分类包信息！！")
+        logging.debug("【主进程】【下载】开始下载壁纸分类包信息；")
         self.get_wallpaper_package_address_gevent_start()
-        print("##3----壁纸分类包信息下载成功！！")
+        logging.debug("【主进程】【下载成功】壁纸分类包信息下载成功；")
 
         # 调用get_wallpaper_address的协程生成方法，使用协程池获取所有壁纸地址
-        print("4----开始下载壁纸地址！！")
+        logging.debug("【主进程】【下载】开始下载壁纸地址；")
         self.get_wallpaper_address_gevent_start()
-        print("##4----壁纸地址下载成功！！")
+        logging.debug("【主进程】【下载成功】壁纸地址下载成功；")
 
         # 关闭数据库连接方法
         self.mysql_conn_del()
+        logging.debug("【主进程】基础信息已准备就绪；")
 
-        basic_information_time_end = time.time()
-        print(f"总耗时为：{basic_information_time_end - basic_information_time_start}秒")
+        time_end = time.time()
+        logging.debug(f"【耗时】本次基础信息下载总耗时为{time_end - time_start}，开始时间{time_start}，结束时间{time_end}；\n")
