@@ -1,10 +1,12 @@
-----爬取ZOL电脑壁纸
+## ----爬取ZOL电脑壁纸
 
 ----本程序设置了默认下载该地址下的所有壁纸：https://desk.zol.com.cn/2560x1440/
 
 ----壁纸包地址获取与壁纸下载采用了多进程+协程池的方式
 
-一.功能注解
+![img.png](img.png)
+
+#### 一.功能注解
 
 1.爬取ZOL桌面壁纸，地址：https://desk.zol.com.cn/；
 
@@ -14,17 +16,13 @@
 
 4.直接读取数据表中保存的所有壁纸的信息（名称、URL）进行壁纸下载，壁纸按照壁纸包的不同分不同文件夹；
 
-二.代码设计流程
-
-爬取ZOL电脑壁纸
+#### 二.代码设计流程
 
 1.真实壁纸文件地址层级
 
-层级1：通过选择的分类进行请求，查出所有壁纸包 需要requests+re
-
-层级2：遍历请求所有壁纸包，获得壁纸包名称和其下所有壁纸下载地址 需要requests+re
-
-层级3：获取所有壁纸包中的图片地址更改像素点 需要requests+re
+    层级1：通过选择的分类进行请求，查出所有壁纸包 需要requests+re
+    层级2：遍历请求所有壁纸包，获得壁纸包名称和其下所有壁纸下载地址 需要requests+re
+    层级3：获取所有壁纸包中的图片地址更改像素点 需要requests+re
 
 2.文件存储目录创建
 
@@ -40,7 +38,7 @@
     2)开启进程和协程池，进程按照CPU核数开启，本机为4，单个进程的协程开6000个
     3)需要multiprocessing、gevent
 
-三.数据库表相关
+#### 三.数据库表相关
 
 1.MySQL
 
@@ -50,7 +48,7 @@
 2.数据库：
 
     数据库名：wallpaper 
-    ----数据库连接配置：host="localhost", port=3306,user="admin", password="admin", db="wallpaper"。如有不同谨记同步修改py文件中配置。
+    ----数据库连接配置：host="localhost", port=3306,user="admin", password="admin", db="wallpaper"。如有不同请同步修改py文件中配置。
 
 3.数据表：
 
@@ -61,10 +59,16 @@
     （5）壁纸地址表：wallpaper_address 
     ----建表语句见data_processing.py文件中create_table方法的sql_list列表
 
-4.已有数据可见categories.sql、size.sql、subtype.sql、wallpaper_package.sql、wallpaper_address.sql等SQL文件
+#### 四.代码执行
 
-四.代码执行
+1.执行初始化SQL文件
 
-1.本地先创建MySQL数据库，库信息如下第三点、数据库表相关所提到；
+    initialize.sql；
 
-2.直接运行main.py文件即可，其中获取下载路径与下载壁纸文件已完全解耦，即data_processing.py、downloader.py文件可分别执行 ----Python版本及相关第三方包版本请参考代码中的标识
+2.运行main.py文件
+
+    其中获取下载路径与下载壁纸文件已完全解耦，即data_processing.py、downloader.py文件可分别执行 ----Python版本及相关第三方包版本请参考代码中的标识
+
+#### 五.待优化项
+
+    1、读取和下载资源的网络请求，插入数据库操作未设置记录，应设置一个失败列表，重试下载。
