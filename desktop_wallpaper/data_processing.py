@@ -1,13 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env python_version3.9.7
 # -*- coding: utf-8 -*-
-# @Version : 3.9
-# @Time    : 2022-3-3 22:49
+# @Time    : 2022-3-9 10:46
 # @Author  : Kai Prince
 # @File    : data_processing.py
+# @Version : 1.0
 # +-------------------------------------------------------------------
 import logging
 import re
-
+from multiprocessing import Process, current_process, cpu_count, freeze_support, Queue
 import pymysql
 from gevent import monkey
 from gevent.pool import Pool
@@ -40,10 +40,13 @@ class BasicInformationDownload(object):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:97.0) Gecko/20100101 Firefox/97.0",
         }
         # 创建类初始化时数据库连接，并生成游标
-        self.conn = pymysql.connect(host="localhost", port=3306, user="admin", password="admin", db="wallpaper")
+        self.conn = pymysql.connect(host="localhost", port=3306, user="root", password="root", db="wallpaper")
         self.cursor = self.conn.cursor()
         # 定义一个壁纸包名称收集列表，用于插入数据库前的去重校验使用
         self.wallpaper_package_title_list = list()
+        # 获取当前CPU逻辑核心数
+        self.cpu_count = cpu_count()
+
 
     def create_table(self):
         """
@@ -58,42 +61,42 @@ class BasicInformationDownload(object):
                 sql = f"""drop table {table[0]};"""
                 self.cursor.execute(sql)
                 logging.debug(f"【主进程】【数据库】删除数据表{table[0]}; 执行的sql语句：{sql}；\n")
-        # 初始化过程生成的四个数据表
+        # 初始化过程生成的5个数据表
         sql_list = [
             """
             CREATE TABLE categories(
-                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment,
-                title VARCHAR (20) NOT NULL, 
-                url VARCHAR (100) NOT NULL 
-            );
+                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment comment '自增主键',
+                title VARCHAR (20) NOT NULL comment '壁纸分类名称', 
+                url VARCHAR (100) NOT NULL comment '壁纸分类后缀地址'
+            )comment='壁纸分类表，存储壁纸分类名称及对应的后缀地址';
             """,
             """
             CREATE TABLE size( 
-                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment, 
-                title VARCHAR (20) NOT NULL, 
-                url VARCHAR (100) NOT NULL 
-            );
+                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment comment '自增主键', 
+                title VARCHAR (20) NOT NULL comment '壁纸尺寸名称', 
+                url VARCHAR (100) NOT NULL comment '壁纸尺寸后缀地址'
+            )comment='壁纸尺寸表，存储壁纸尺寸名称及对应的后缀地址';
             """,
             """
             CREATE TABLE subtype(
-                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment,
-                title VARCHAR (20) NOT NULL,
-                url VARCHAR (100) NOT NULL,
-                categories_id INT UNSIGNED NOT NULL
-            );
+                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment comment '自增主键',
+                title VARCHAR (20) NOT NULL comment '壁纸子类名称',
+                url VARCHAR (100) NOT NULL comment '壁纸子类后缀地址',
+                categories_id INT UNSIGNED NOT NULL comment '所属的壁纸分类id'
+            )comment='壁纸子类表，存储每个壁纸分类下的子类名称及后缀地址';
             """,
             """
             CREATE TABLE wallpaper_package(
-                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment,
-                url VARCHAR (200) NOT NULL
-            );
+                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment comment '自增主键',
+                url VARCHAR (200) NOT NULL comment '壁纸包后缀地址'
+            )comment='壁纸包表，存储壁纸包后缀地址';
             """,
             """
             CREATE TABLE wallpaper_address(
-                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment,
-                title VARCHAR (100) NOT NULL,
-                url VARCHAR (200) NOT NULL
-            );
+                id INT UNSIGNED PRIMARY KEY NOT NULL auto_increment comment '自增主键',
+                title VARCHAR (100) NOT NULL comment '壁纸图片名称',
+                url VARCHAR (200) NOT NULL comment '壁纸图片真实下载地址'
+            )comment='壁纸信息表，存储壁纸图片的名称和真实下载地址';
             """,
         ]
         for sql in sql_list:
@@ -130,19 +133,15 @@ class BasicInformationDownload(object):
             wallpaper_categories = ["全部"] + re.findall(r"""<ahref="/[a-z]+/">([\w]+)</a>""", response_replace)
             wallpaper_categories_url = ["/pc/"] + re.findall(r"""<ahref="(/[a-z]+/)">[\w]+</a>""", response_replace)
             wallpaper_size = re.findall(r"""<ahref="/[0-9]+x[0-9]+/">([a-z0-9x]+\(*\w*.\w*\)*)</a>""", response_replace)
-            wallpaper_size_url = re.findall(r"""<ahref="(/[0-9]+x[0-9]+/)">[a-z0-9x]+\(*\w*.\w*\)*</a>""",
-                                            response_replace)
+            wallpaper_size_url = re.findall(r"""<ahref="(/[0-9]+x[0-9]+/)">[a-z0-9x]+\(*\w*.\w*\)*</a>""", response_replace)
 
             # 拼接分类的完整URL，用于获取分类下的子类信息
-            url_categories_dict = {wallpaper_categories[i]: self.url_origin + wallpaper_categories_url[i] for i in
-                                   range(len(wallpaper_categories))}
+            url_categories_dict = {wallpaper_categories[i]: self.url_origin + wallpaper_categories_url[i] for i in range(len(wallpaper_categories))}
 
-            logging.debug(
-                f"【主进程】【网络请求】壁纸分类：{wallpaper_categories}；\n壁纸分类地址：{wallpaper_categories_url}；\n壁纸尺寸：{wallpaper_size}；\n壁纸尺寸地址{wallpaper_size_url}；\n")
+            logging.debug(f"【主进程】【网络请求】壁纸分类：{wallpaper_categories}；\n壁纸分类地址：{wallpaper_categories_url}；\n壁纸尺寸{wallpaper_size} ；\n壁纸尺寸地址{wallpaper_size_url}；\n")
 
             # 将查询的结果插入到数据表中，并启动子类信息查询
-            self.insert_categories_size(wallpaper_categories, wallpaper_categories_url, wallpaper_size,
-                                        wallpaper_size_url)
+            self.insert_categories_size(wallpaper_categories, wallpaper_categories_url, wallpaper_size, wallpaper_size_url)
 
             logging.debug(f"【主进程】【下载成功】壁纸分类、壁纸尺寸信息；\n")
 
@@ -151,8 +150,7 @@ class BasicInformationDownload(object):
         except Exception as result:
             logging.debug(f"【主进程】【ERROR】{result}；\n")
 
-    def insert_categories_size(self, wallpaper_categories, wallpaper_categories_url, wallpaper_size,
-                               wallpaper_size_url):
+    def insert_categories_size(self, wallpaper_categories, wallpaper_categories_url, wallpaper_size, wallpaper_size_url):
         """
         往MySQL分类表、尺寸表中插入数据
         :param wallpaper_categories:壁纸名称
@@ -163,15 +161,13 @@ class BasicInformationDownload(object):
         """
         # 遍历壁纸名称列表，生成SQL语句并插入到分类表
         for i in range(len(wallpaper_categories)):
-            sql_categories = """insert into wallpaper.categories values(0,'%s','%s'); """ % (
-                wallpaper_categories[i], wallpaper_categories_url[i])
+            sql_categories = """insert into wallpaper.categories values(0,'%s','%s'); """ % (wallpaper_categories[i], wallpaper_categories_url[i])
             logging.debug(f"【主进程】【数据库】壁纸分类插入SQL语句：{sql_categories}；\n")
             self.cursor.execute(sql_categories)
 
         # 遍历壁纸尺寸列表，生成SQL语句并插入到尺寸表
         for j in range(len(wallpaper_size)):
-            sql_size = """insert into wallpaper.size values(0,'%s','%s'); """ % (
-                wallpaper_size[j], wallpaper_size_url[j])
+            sql_size = """insert into wallpaper.size values(0,'%s','%s'); """ % (wallpaper_size[j], wallpaper_size_url[j])
             self.cursor.execute(sql_size)
             logging.debug(f"【主进程】【数据库】壁纸尺寸插入SQL语句：{sql_size}；\n")
 
@@ -197,8 +193,7 @@ class BasicInformationDownload(object):
                 response_subclass_replace = response_subclass.replace(" ", "").replace("\r", "").replace("\n", "")
 
                 wallpaper_subtype = re.findall(r"""<ahref="/[a-z]+/[a-z]+/">([\w]+)</a>""", response_subclass_replace)
-                wallpaper_subtype_url = re.findall(r"""<ahref="/[a-z]+(/[a-z]+/)">[\w]+</a>""",
-                                                   response_subclass_replace)
+                wallpaper_subtype_url = re.findall(r"""<ahref="/[a-z]+(/[a-z]+/)">[\w]+</a>""", response_subclass_replace)
 
                 logging.debug(f"【主进程】【网络请求】壁纸子类：{wallpaper_subtype}；\n壁纸子类地址：{wallpaper_subtype_url}；\n")
 
@@ -319,7 +314,6 @@ class BasicInformationDownload(object):
         :param url_package_idx: url_package+idx的元组，url_package:壁纸包地址；idx: 协程编号。
         :return:
         """
-
         url_package = url_package_idx[0][0]
         idx = url_package_idx[1]
 
@@ -328,8 +322,7 @@ class BasicInformationDownload(object):
         # 定义一个空的地址字典包，用于存储每个壁纸包中的壁纸下载地址，循环取出每个壁纸包后清空
         wallpaper_all = dict()
         try:
-            ret = requests.get(url=self.url_origin + url_package, headers=self.headers, timeout=15).content.decode(
-                "gbk")
+            ret = requests.get(url=self.url_origin + url_package, headers=self.headers, timeout=15).content.decode("gbk")
             ret_replace = ret.replace(" ", "").replace("\r", "").replace("\n", "")
 
             wallpaper_title = re.findall(r"""<aid="titleName"href="/bizhi/[0-9_]+.html">([\w\W]+?)</a>""", ret_replace)
@@ -356,8 +349,7 @@ class BasicInformationDownload(object):
         for key, value in wallpaper_all.items():
             for url in value:
                 url_re = re.sub(r"\d{3}x\d{2}", self.size, url)
-                sql_wallpaper_address = """insert into wallpaper.wallpaper_address values(0,'%s','%s')""" % (
-                    key, url_re)
+                sql_wallpaper_address = """insert into wallpaper.wallpaper_address values(0,'%s','%s')""" % (key, url_re)
                 self.cursor.execute(sql_wallpaper_address)
                 logging.debug(f"【主进程】【壁纸地址协程{idx}】【数据库】壁纸地址{url_re}插入成功，SQL语句：{sql_wallpaper_address}；\n")
 
@@ -396,4 +388,4 @@ class BasicInformationDownload(object):
         logging.debug("【主进程】基础信息已准备就绪；")
 
         time_end = time.time()
-        logging.debug(f"【耗时】本次基础信息下载总耗时为{time_end - time_start}，开始时间{time_start}，结束时间{time_end}；\n")
+        logging.debug(f"【耗时】本次基础信息下载总耗时为{time_end - time_start}\n")
