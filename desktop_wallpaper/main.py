@@ -1,9 +1,9 @@
-#!/usr/bin/env python
+#!/usr/bin/env python_version3.9.7
 # -*- coding: utf-8 -*-
-# @Version : 3.9
-# @Time    : 2022-3-3 16:01
+# @Time    : 2022-3-9 10:46
 # @Author  : Kai Prince
 # @File    : main.py
+# @Version : 1.0
 # +-------------------------------------------------------------------
 import logging
 import os
