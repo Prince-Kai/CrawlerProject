@@ -1,16 +1,16 @@
-#!/usr/bin/env python_version3.9.7
-# -*- coding: utf-8 -*-
-# @Time    : 2022-3-9 10:46
-# @Author  : Kai Prince
-# @File    : downloader.py
-# @Version : 1.0
+#!/usr/bin/env python_version3.9.12
+# -*- coding : utf-8 -*-
+# @Time      : 2022/3/29 10:40
+# @Author    : Prince Kai
+# @File      : downloader.py
+# @Version   : 1.1
 # +-------------------------------------------------------------------
 import logging
 import logging.handlers
 import os
 import re
 import shutil
-from multiprocessing import Process, current_process, cpu_count, freeze_support, Queue
+from multiprocessing import Process, current_process, cpu_count
 
 import pymysql
 from gevent import monkey
@@ -20,9 +20,8 @@ from gevent.pool import Pool
 monkey.patch_all()
 
 import time
-from datetime import datetime
-from requests.adapters import HTTPAdapter
 import requests
+from requests.adapters import HTTPAdapter
 
 LEVELS = [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL]
 
@@ -39,14 +38,14 @@ class WallpaperDownloader(object):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:97.0) Gecko/20100101 Firefox/97.0",
         }
         # 连接数据库，读取出所有的文件下载地址
-        self.conn = pymysql.connect(host="localhost", port=3306, user="root", password="root", db="wallpaper")
+        self.conn = pymysql.connect(host="192.168.44.131", port=3306, user="root", password="root", db="wallpaper")
         # 获取当前CPU逻辑核心数
         self.cpu_count = cpu_count()
 
     def set_folder(self):
         """
         壁纸文件夹生成方法
-        :return:返回查询数据库得到的数据
+        :return: 返回查询数据库得到的数据
         """
         # 调用数据表找到壁纸地址的所有行信息，包括id、title、url
         with self.conn.cursor() as cursor:
@@ -77,8 +76,8 @@ class WallpaperDownloader(object):
         """
         进程定义方法，每个进程默认有一个线程，6000个协程,具体以传入的为准，计算公式为总数/4。len(url_data_tuple) // 4
         :param url_data_tuple: 数据库取出的原始行数据总和元组、
-        :param queue:消息队列
-        :return:返回子进程列表
+        :param queue: 消息队列
+        :return: 返回子进程列表
         """
         # 协程队列
         gevent_list = list()
@@ -92,10 +91,10 @@ class WallpaperDownloader(object):
             # 每次读取出url，将url添加到队列,url中包含id、title、url地址，格式：[(id,title,url),(),]
             gevent_list.append(url)
             # 一定数量的url就启动一个进程并执行
-            if i == (len(url_data_tuple) // (self.cpu_count - 1)):
+            if i == len(url_data_tuple) // (self.cpu_count - 1):
                 j += 1
-                p = Process(target=self.gevent_start, name=f"子进程{j}", args=(gevent_list, queue))
-                logging.debug(f"【主进程】【子进程{j}】创建成功；\n")
+                p = Process(target=self.gevent_start, name=f"壁纸下载子进程{j}", args=(gevent_list, queue))
+                logging.debug(f"【主进程】【壁纸下载子进程{j}】创建成功；\n")
                 subprocess_list.append(p)
                 p.start()
                 # 重置url队列和计数器
@@ -108,7 +107,7 @@ class WallpaperDownloader(object):
         """
         协程定义方法，由进程定义方法进入
         :param gevent_list: 该进程中的协程数量及协程要下载的URL
-        :param queue:消息队列
+        :param queue: 消息队列
         :return:
         """
         queue.put(f"【{current_process().name}】进程编号：{current_process().pid}开启成功；\n")
@@ -124,7 +123,7 @@ class WallpaperDownloader(object):
     def download(self, url_queue_tuple):
         """
         下载器方法。将每个壁纸下载都当做一个协程进行请求并转存图片
-        :param url_queue_tuple:url_line+queue组成的元组。queue:消息队列。url_line: 从数据库取出的行数据，元组形式，包含(id,title,url)
+        :param url_queue_tuple: url_line+queue组成的元组。queue:消息队列。url_line: 从数据库取出的行数据，元组形式，包含(id,title,url)
         :return:
         """
         queue = url_queue_tuple[1]
@@ -154,48 +153,18 @@ class WallpaperDownloader(object):
 
         queue.put(f"【{current_process().name}】【协程{num}】壁纸下载协程关闭成功；\n")
 
-    def set_listen_process(self, queue):
-        """
-        监听进程配置日志对象方法
-        :param queue: 传输消息队列对象
-        :return:
-        """
-        # 设置日志等级和输出日志格式
-        logging.basicConfig(level=LEVELS[0],
-                            filename=f"""logs/log{datetime.now().strftime("%Y-%m-%d")}-子进程.txt""",
-                            filemode="a",
-                            format='【%(asctime)s】-【%(filename)s】【line:%(lineno)d】【%(levelname)s】: %(''message)s')
-
-        logger = logging.getLogger(__name__)
-
-        # 死循环接收消息队列中的其他子进程日志信息，直至主进程消亡后死亡
-        while True:
-            res = queue.get()
-            logger.debug(f"【进程】{res}")
-
-    def main(self):
+    def main(self, queue):
         """
         主控制方法，由外部的main.py文件调用
+        :param queue: 主进程传入消息队列
         :return:
         """
-        # 创建消息队列
-        queue = Queue()
-
-        # windows不支持fork函数，为解决打包成exe后无限制开启子进程的bug
-        freeze_support()
-
         # 设置请求重试次数，记录开始时间，
         requests.adapters.DEFAULT_RETRIES = 5
         time_start = time.time()
 
         # 调用壁纸文件夹生成方法
         url_data_tuple = self.set_folder()
-
-        # 建立监听子进程，并设置为守护进程，随主进程一同消亡
-        listen_process = Process(target=self.set_listen_process, name="子进程0", args=(queue,))
-        listen_process.daemon = True
-        listen_process.start()
-        logging.debug(f"【主进程】【{listen_process.name}】进程编号：{listen_process.pid}开启成功；\n")
 
         # 调用进程生成方法,方法调用结束后返回所有子进程的指向列表
         subprocess_list = self.multiprocessing_start(url_data_tuple, queue)
@@ -205,6 +174,5 @@ class WallpaperDownloader(object):
             i.join()
 
         time_end = time.time()
-        logging.debug(f"【主进程】【{listen_process.name}】进程编号：{listen_process.pid}关闭成功；\n")
         time.sleep(0.1)
         logging.debug(f"【耗时】下载壁纸总耗时{time_end - time_start}\n")
