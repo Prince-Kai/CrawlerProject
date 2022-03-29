@@ -38,17 +38,21 @@
     2)开启进程和协程池，进程按照CPU核数开启，本机为4，单个进程的协程开6000个
     3)需要multiprocessing、gevent
 
+（4）日志记录
+
+    1）使用了logging模块，记录了脚本运行中的关键日志，保存只TXT文件中；
+    2）多进程中子进程的日志通过消息队列传递给监听进程，由监听进程写入日志文件。
+
 #### 三.数据库表相关
 
 1.MySQL
 
     （1）版本：mysql-8.0.26 
-    （2）工具：Navicat Premium
+    （2）工具：Navicat Premium15
 
 2.数据库：
 
-    数据库名：wallpaper 
-    ----数据库连接配置：host="localhost", port=3306,user="admin", password="admin", db="wallpaper"。如有不同请同步修改py文件中配置。
+    数据库名：wallpaper
 
 3.数据表：
 
@@ -68,7 +72,3 @@
 2.运行main.py文件
 
     其中获取下载路径与下载壁纸文件已完全解耦，即data_processing.py、downloader.py文件可分别执行 ----Python版本及相关第三方包版本请参考代码中的标识
-
-#### 五.待优化项
-
-    1、读取和下载资源的网络请求，插入数据库操作未设置记录，应设置一个失败列表，重试下载。
