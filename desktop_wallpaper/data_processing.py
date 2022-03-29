@@ -1,13 +1,13 @@
-#!/usr/bin/env python_version3.9.7
-# -*- coding: utf-8 -*-
-# @Time    : 2022-3-9 10:46
-# @Author  : Kai Prince
-# @File    : data_processing.py
-# @Version : 1.0
+#!/usr/bin/env python_version3.9.12
+# -*- coding : utf-8 -*-
+# @Time      : 2022/3/29 10:40
+# @Author    : Prince Kai
+# @File      : data_processing.py
+# @Version   : 1.1
 # +-------------------------------------------------------------------
 import logging
 import re
-from multiprocessing import Process, current_process, cpu_count, freeze_support, Queue
+from multiprocessing import cpu_count, Process, current_process
 import pymysql
 from gevent import monkey
 from gevent.pool import Pool
@@ -40,13 +40,12 @@ class BasicInformationDownload(object):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:97.0) Gecko/20100101 Firefox/97.0",
         }
         # 创建类初始化时数据库连接，并生成游标
-        self.conn = pymysql.connect(host="localhost", port=3306, user="root", password="root", db="wallpaper")
+        self.conn = pymysql.connect(host="192.168.44.131", port=3306, user="root", password="root", db="wallpaper")
         self.cursor = self.conn.cursor()
-        # 定义一个壁纸包名称收集列表，用于插入数据库前的去重校验使用
+        # 定义一张壁纸包名称收集列表，用于插入数据库前的去重校验使用
         self.wallpaper_package_title_list = list()
         # 获取当前CPU逻辑核心数
         self.cpu_count = cpu_count()
-
 
     def create_table(self):
         """
@@ -138,7 +137,8 @@ class BasicInformationDownload(object):
             # 拼接分类的完整URL，用于获取分类下的子类信息
             url_categories_dict = {wallpaper_categories[i]: self.url_origin + wallpaper_categories_url[i] for i in range(len(wallpaper_categories))}
 
-            logging.debug(f"【主进程】【网络请求】壁纸分类：{wallpaper_categories}；\n壁纸分类地址：{wallpaper_categories_url}；\n壁纸尺寸{wallpaper_size} ；\n壁纸尺寸地址{wallpaper_size_url}；\n")
+            logging.debug(
+                f"【主进程】【网络请求】壁纸分类：{wallpaper_categories}；\n壁纸分类地址：{wallpaper_categories_url}；\n壁纸尺寸{wallpaper_size} ；\n壁纸尺寸地址{wallpaper_size_url}；\n")
 
             # 将查询的结果插入到数据表中，并启动子类信息查询
             self.insert_categories_size(wallpaper_categories, wallpaper_categories_url, wallpaper_size, wallpaper_size_url)
@@ -200,12 +200,12 @@ class BasicInformationDownload(object):
                 subtype_title.append(wallpaper_subtype)
                 subtype_url.append(wallpaper_subtype_url)
 
-                # 将查询到的数据插入到数据表中
-                self.insert_subtype(wallpaper_categories, (subtype_title, subtype_url))
-                logging.debug(f"【主进程】【下载成功】壁纸子类信息；\n")
-
             except Exception as result:
                 logging.debug(f"【主进程】【ERROR】{result}；\n")
+
+        # 将查询到的数据插入到数据表中
+        self.insert_subtype(wallpaper_categories, (subtype_title, subtype_url))
+        logging.debug(f"【主进程】【下载成功】壁纸子类信息；\n")
 
     def insert_subtype(self, wallpaper_categories, subtype_info):
         """
@@ -288,38 +288,82 @@ class BasicInformationDownload(object):
         self.conn.commit()
         logging.debug(f"【主进程】【壁纸包协程{num}】【数据库】壁纸包信息提交成功；\n")
 
-    def get_wallpaper_address_gevent_start(self):
+    def get_wallpaper_address_process_start(self, queue):
         """
-        壁纸地址获取方法的协程生成方法
-        :return:
+        进程定义方法，每个进程默认有一个线程，6000个协程,具体以传入的为准
+        :param queue: 消息队列
+        :return: 返回子进程列表
         """
-        # 定义壁纸下载协程池
-        pool = Pool(6000)
-
-        # 查询数据表wallpaper_package，获取到所有的壁纸包地址，url_package_tuple为元组格式：(("11",),("22",))
-        sql_wallpaper_address = """SELECT url from wallpaper.wallpaper_package;"""
+        # 查询数据表wallpaper_package，获取到所有的壁纸包地址，url_package_tuple为元组格式：((id1, "url1"),(id2, "url2"))
+        sql_wallpaper_address = """SELECT * from wallpaper.wallpaper_package;"""
         self.cursor.execute(sql_wallpaper_address)
         url_package_tuple = self.cursor.fetchall()
         logging.debug(f"【主进程】【数据库】壁纸包信息取出SQL：{sql_wallpaper_address}；\n")
+        logging.debug(f"【主进程】【数据库】壁纸包信息：{url_package_tuple}；\n")
 
-        # 遍历所有壁纸包下载地址，加入到协程池中
-        for idx, url_package in enumerate(url_package_tuple):
-            logging.debug(f"【主进程】【壁纸地址协程{idx}】壁纸地址协程开启；\n")
-            pool.map(self.get_wallpaper_address, ((url_package, idx),))
-        pool.join()
+        # 协程队列
+        gevent_list = list()
+        subprocess_list = list()
 
-    def get_wallpaper_address(self, url_package_idx):
+        # 下载器多进程设置、进程名称计数器
+        i = 0
+        j = 0
+        for idx_url in url_package_tuple:
+            i += 1
+            # 每次读取出url，将idx和url添加到队列,url中只包含url地址，格式：[(id1, "url1"),(id2, "url2")]
+            gevent_list.append(idx_url)
+            # 一定数量的url就启动一个进程并执行
+            if i == len(url_package_tuple) // (self.cpu_count - 1):
+                j += 1
+                p = Process(target=self.get_wallpaper_address_gevent_start, name=f"壁纸地址子进程{j}", args=(gevent_list, queue))
+                logging.debug(f"【主进程】【壁纸地址子进程{j}】创建成功；\n")
+                logging.debug(f"【主进程】【壁纸地址子进程{j}】【协程列表】{gevent_list}；\n")
+                subprocess_list.append(p)
+                p.start()
+                # 重置url队列和计数器
+                gevent_list = list()
+                i = 0
+
+        if gevent_list:
+            p = Process(target=self.get_wallpaper_address_gevent_start, name=f"壁纸地址子进程{self.cpu_count}", args=(gevent_list, queue))
+            logging.debug(f"【主进程】【壁纸地址子进程{self.cpu_count}】创建成功；\n")
+            logging.debug(f"【主进程】【壁纸地址子进程{self.cpu_count}】【协程列表】{gevent_list}；\n")
+            subprocess_list.append(p)
+            p.start()
+
+        return subprocess_list
+
+    def get_wallpaper_address_gevent_start(self, gevent_list, queue):
         """
-        读取数据表wallpaper_package，获取到全部的壁纸包地址，并进行下述请求，获取到真实的图片下载地址
-        :param url_package_idx: url_package+idx的元组，url_package:壁纸包地址；idx: 协程编号。
+        壁纸地址获取方法的协程生成方法
+        :param gevent_list: 协程列表，带有地址和序号
+        :param queue: 消息队列
         :return:
         """
-        url_package = url_package_idx[0][0]
-        idx = url_package_idx[1]
+        queue.put(f"【{current_process().name}】进程编号：{current_process().pid}开启成功；\n")
 
-        logging.debug(f"【主进程】【壁纸地址协程{idx}】开始下载；\n")
+        # 定义壁纸下载协程池
+        pool = Pool(6000)
 
-        # 定义一个空的地址字典包，用于存储每个壁纸包中的壁纸下载地址，循环取出每个壁纸包后清空
+        # 遍历所有壁纸包下载地址，加入到协程池中
+        for idx, url_package in gevent_list:
+            queue.put(f"【{current_process().name}】【壁纸地址协程{idx}】壁纸地址协程开启；\n")
+            pool.map(self.get_wallpaper_address, ((url_package, idx, queue),))
+        pool.join()
+
+    def get_wallpaper_address(self, url_package_idx_queue):
+        """
+        读取数据表wallpaper_package，获取到全部的壁纸包地址，并进行下述请求，获取到真实的图片下载地址
+        :param url_package_idx_queue: url_package+idx的元组，url_package:壁纸包地址；idx: 协程编号；queue: 消息队列。
+        :return:
+        """
+        url_package = url_package_idx_queue[0]
+        idx = url_package_idx_queue[1]
+        queue = url_package_idx_queue[2]
+
+        queue.put(f"【{current_process().name}】【壁纸地址协程{idx}】开始下载；\n")
+
+        # 定义一个空的地址字典包，用于存储每张壁纸包中的壁纸下载地址，循环取出每张壁纸包后清空
         wallpaper_all = dict()
         try:
             ret = requests.get(url=self.url_origin + url_package, headers=self.headers, timeout=15).content.decode("gbk")
@@ -328,19 +372,20 @@ class BasicInformationDownload(object):
             wallpaper_title = re.findall(r"""<aid="titleName"href="/bizhi/[0-9_]+.html">([\w\W]+?)</a>""", ret_replace)
             wallpaper_address = re.findall(r"""<imgsrc[s]*="([/\w.:-]+)"width="\d+"height="\d+">""", ret_replace)
 
-            logging.debug(f"【主进程】【壁纸地址协程{idx}】【网络请求】壁纸名称：{wallpaper_title}；\n壁纸地址：{wallpaper_address}；\n")
+            queue.put(f"【{current_process().name}】【壁纸地址协程{idx}】【网络请求】壁纸名称：{wallpaper_title}；\n壁纸地址：{wallpaper_address}；\n")
 
             # 将壁纸下载地址以字典的形式存入，格式：key:壁纸名，value:[壁纸下载地址1,壁纸下载地址2,......]
             wallpaper_all[wallpaper_title[0]] = wallpaper_address
 
-            self.insert_wallpaper_address(wallpaper_all, idx)
+            self.insert_wallpaper_address(wallpaper_all, idx, queue)
 
         except Exception as result:
-            logging.debug(f"【主进程】【壁纸地址协程{idx}】【ERROR】捕获到异常：{result}；\n")
+            queue.put(f"【{current_process().name}】【壁纸地址协程{idx}】【ERROR】捕获到异常：{result}；\n")
 
-    def insert_wallpaper_address(self, wallpaper_all, idx):
+    def insert_wallpaper_address(self, wallpaper_all, idx, queue):
         """
         由get_wallpaper_address方法调用，接收壁纸下载地址字典后，转存入数据表
+        :param queue: 消息队列
         :param idx: 协程序号
         :param wallpaper_all:每个壁纸包中的所有壁纸下载地址，格式为字典,key为壁纸包名 value为壁纸地址列表
         :return:
@@ -351,20 +396,18 @@ class BasicInformationDownload(object):
                 url_re = re.sub(r"\d{3}x\d{2}", self.size, url)
                 sql_wallpaper_address = """insert into wallpaper.wallpaper_address values(0,'%s','%s')""" % (key, url_re)
                 self.cursor.execute(sql_wallpaper_address)
-                logging.debug(f"【主进程】【壁纸地址协程{idx}】【数据库】壁纸地址{url_re}插入成功，SQL语句：{sql_wallpaper_address}；\n")
+                queue.put(f"【{current_process().name}】【壁纸地址协程{idx}】【数据库】壁纸地址{url_re}插入成功，SQL语句：{sql_wallpaper_address}；\n")
 
             self.conn.commit()
-            logging.debug(f"【主进程】【壁纸地址协程{idx}】【数据库】壁纸包“{key}”下壁纸地址提交成功；\n")
-            logging.debug(f"【主进程】【壁纸地址协程{idx}】关闭；\n")
+            queue.put(f"【{current_process().name}】【壁纸地址协程{idx}】【数据库】壁纸包“{key}”下壁纸地址提交成功；\n")
+            queue.put(f"【{current_process().name}】壁纸地址协程{idx}】关闭；\n")
 
-    def main(self):
+    def main(self, queue):
         """
         控制方法，协调调度进行下载、保存
         """
-        # 设置请求重试次数
+        # 设置请求重试次数，记录开始时间，
         requests.adapters.DEFAULT_RETRIES = 5
-
-        # 记录开始时间
         time_start = time.time()
 
         # 初始化创建数据表，初始化后不再调用
@@ -378,10 +421,11 @@ class BasicInformationDownload(object):
         self.get_wallpaper_package_address_gevent_start()
         logging.debug("【主进程】【下载成功】壁纸分类包信息下载成功；")
 
-        # 调用get_wallpaper_address的协程生成方法，使用协程池获取所有壁纸地址
-        logging.debug("【主进程】【下载】开始下载壁纸地址；")
-        self.get_wallpaper_address_gevent_start()
-        logging.debug("【主进程】【下载成功】壁纸地址下载成功；")
+        # 调用get_wallpaper_address的进程生成方法，使用协程池获取所有壁纸地址
+        subprocess_list = self.get_wallpaper_address_process_start(queue)
+
+        for i in subprocess_list:
+            i.join()
 
         # 关闭数据库连接方法
         self.mysql_conn_del()
